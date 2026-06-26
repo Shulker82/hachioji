@@ -193,11 +193,11 @@ setInterval(() => {
                     if (travelDistance < 200) {
                         // ① 近距離（200マス未満）：マシンガンより少し強いだけの「5」ダメージ
                         finalDamage = 5;
-                    } else if (travelDistance < 500) {
+                    } else if (travelDistance < 700) {
                         // ② 中距離（200〜500マス）：だんだん威力が上がっていく（最大25ダメージ）
                         // 距離が離れるほど、5から25ダメージへ滑らかに増加
                         let ratio = (travelDistance - 200) / 300;
-                        finalDamage = 5 + Math.floor(ratio * 20);
+                        finalDamage = 5 + Math.floor(ratio * 10);
                     } else {
                         // ③ 遠距離（500マス以上）：一撃必殺級の超大ダメージ「45」！！
                         finalDamage = 45;
