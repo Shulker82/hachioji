@@ -2,9 +2,14 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>2Dオンラインバトル 軽量最適化版</title>
+    <title>八王子市gigaスクール情報ポータル</title>
+<meta name="description" content="シュルカー">
+<meta name="keywords" content="シュルカー">
     <style>
-        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #222; color: white; font-family: sans-serif; }
+        html, body {
+            margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+            background-color: #222; color: white; font-family: sans-serif;
+        }
         canvas { display: block; position: absolute; top: 0; left: 0; background-color: #111; cursor: crosshair; }
         #ui { position: absolute; top: 20px; width: 100%; text-align: center; pointer-events: none; z-index: 10; }
         #weapon-select { position: absolute; bottom: 20px; width: 100%; text-align: center; z-index: 10; font-size: 18px; text-shadow: 1px 1px 2px black; }
@@ -19,7 +24,7 @@
 
     <div id="weapon-select">
         現在の武器: <span id="current-weapon-txt" style="color: #fffa65; font-weight: bold;">マシンガン</span><br>
-        <span style="font-size: 14px; color: #aaa;">（やられた後に 1〜4キーで変更）</span>
+        <span style="font-size: 14px; color: #aaa;">（やられた後に 1:マシンガン / 2:ショットガン / 3:スナイパー で変更）</span>
     </div>
     
     <canvas id="gameCanvas"></canvas>
@@ -37,58 +42,47 @@
         }
         window.addEventListener('resize', resizeCanvas);
 
-        if (!sessionStorage.getItem('player_color')) {
-            sessionStorage.setItem('player_color', 'rgb(' + Math.floor(Math.random()*255) + ',' + Math.floor(Math.random()*255) + ',255)');
-        }
-
         let myPlayer = {
-            x: Math.random() * 400 + 100, y: Math.random() * 400 + 100, size: 30,
-            color: sessionStorage.getItem('player_color'), hp: 50, maxHp: 50, alive: true
+            x: Math.random() * 400 + 100,
+            y: Math.random() * 400 + 100,
+            size: 30,
+            color: 'rgb(' + Math.floor(Math.random()*255) + ',' + Math.floor(Math.random()*255) + ',255)',
+            hp: 50,
+            maxHp: 50,
+            alive: true
         };
 
         let allPlayers = {};
-        let allBullets = {}; // 💡 オブジェクトに変更
+        let allBullets = [];
         let allObstacles = [];
-        let allExplosions = [];
-        let myWeapon = 'machinegun'; 
+        let myWeapon = 'machinegun'; // 手元の仮変数
 
         const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, w: false, a: false, s: false, d: false, Space: false };
         let mouseX = 0; let mouseY = 0; let shootCooldown = 0;
 
-        // 💡【追加】手元の自分の動きだけは60fpsで超なめらかに動かす処理（ローカル予測）
-        // これによりサーバーが30fpsになっても、自分の操作感は一切重くなりません！
-        function updateMyMovement() {
-            if (!myPlayer.alive) return;
-            const speed = 4;
-            if (keys.ArrowUp || keys.w) myPlayer.y -= speed;
-            if (keys.ArrowDown || keys.s) myPlayer.y += speed;
-            if (keys.ArrowLeft || keys.a) myPlayer.x -= speed;
-            if (keys.ArrowRight || keys.d) myPlayer.x += speed;
-
-            myPlayer.x = Math.max(0, Math.min(canvas.width - myPlayer.size, myPlayer.x));
-            myPlayer.y = Math.max(0, Math.min(canvas.height - myPlayer.size, myPlayer.y));
-            socket.emit('player_move', { x: myPlayer.x, y: myPlayer.y });
-        }
-
+        // 画面のテキストを書き換えるだけの関数
         function updateWeaponText(type) {
-            const names = { machinegun: 'マシンガン', shotgun: 'ショットガン', sniper: 'スナイパー', rocket: 'ロケットランチャー' };
+            const names = { machinegun: 'マシンガン', shotgun: 'ショットガン', sniper: 'スナイパー' };
             document.getElementById('current-weapon-txt').textContent = names[type] || 'マシンガン';
         }
 
+        // キーボード入力
         window.addEventListener('keydown', (e) => { 
             if (e.key in keys) keys[e.key] = true; 
             if (e.code === 'Space') { keys.Space = true; e.preventDefault(); }
 
+            // ゲームオーバー時のみ武器変更
             if (!myPlayer.alive) {
                 let selected = '';
                 if (e.key === '1') selected = 'machinegun';
                 if (e.key === '2') selected = 'shotgun';
                 if (e.key === '3') selected = 'sniper';
-                if (e.key === '4') selected = 'rocket';
 
                 if (selected) {
-                    myWeapon = selected; updateWeaponText(selected);
-                    socket.emit('change_weapon', { color: myPlayer.color, weaponType: selected });
+                    myWeapon = selected;
+                    updateWeaponText(selected);
+                    // 💡重要：選んだ瞬間に、サーバーへ「この武器にする！」と即座に送信
+                    socket.emit('change_weapon', selected);
                 }
             }
         });
@@ -99,23 +93,45 @@
         });
         window.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 
-        // メインループ（描画は60fps、通信は30fps）
+        // メインループ
         function gameLoop() {
-            updateMyMovement(); // 自分の移動
+            if (myPlayer.alive) {
+                let moved = false;
+                const speed = 4;
+                if (keys.ArrowUp || keys.w) { myPlayer.y -= speed; moved = true; }
+                if (keys.ArrowDown || keys.s) { myPlayer.y += speed; moved = true; }
+                if (keys.ArrowLeft || keys.a) { myPlayer.x -= speed; moved = true; }
+                if (keys.ArrowRight || keys.d) { myPlayer.x += speed; moved = true; }
 
-            if (myPlayer.alive && shootCooldown > 0) shootCooldown--;
+                myPlayer.x = Math.max(0, Math.min(canvas.width - myPlayer.size, myPlayer.x));
+                myPlayer.y = Math.max(0, Math.min(canvas.height - myPlayer.size, myPlayer.y));
 
-            if (myPlayer.alive && keys.Space && shootCooldown === 0) {
-                const pX = myPlayer.x + myPlayer.size / 2;
-                const pY = myPlayer.y + myPlayer.size / 2;
-                const angle = Math.atan2(mouseY - pY, mouseX - pX);
-                
-                if (myWeapon === 'machinegun') { socket.emit('shoot', { x: pX, y: pY, angle: angle }); shootCooldown = 10; }
-                else if (myWeapon === 'shotgun') { socket.emit('shoot', { x: pX, y: pY, angle: angle }); shootCooldown = 40; }
-                else if (myWeapon === 'sniper') { socket.emit('shoot', { x: pX, y: pY, angle: angle }); shootCooldown = 60; }
-                else if (myWeapon === 'rocket') { socket.emit('shoot', { x: pX, y: pY, angle: angle }); shootCooldown = 80; }
+                socket.emit('player_move', { x: myPlayer.x, y: myPlayer.y });
+
+                if (shootCooldown > 0) shootCooldown--;
+
+                if (keys.Space && shootCooldown === 0) {
+                    const pX = myPlayer.x + myPlayer.size / 2;
+                    const pY = myPlayer.y + myPlayer.size / 2;
+                    const angle = Math.atan2(mouseY - pY, mouseX - pX);
+                    
+                    // 性能判定はサーバーがやるので、ここではタイマーだけ制御
+                    if (myWeapon === 'machinegun') {
+                        socket.emit('shoot', { x: pX, y: pY, angle: angle });
+                        shootCooldown = 10;
+                    } else if (myWeapon === 'shotgun') {
+                        socket.emit('shoot', { x: pX, y: pY, angle: angle });
+                        socket.emit('shoot', { x: pX, y: pY, angle: angle - 0.2 });
+                        socket.emit('shoot', { x: pX, y: pY, angle: angle + 0.2 });
+                        shootCooldown = 40;
+                    } else if (myWeapon === 'sniper') {
+                        socket.emit('shoot', { x: pX, y: pY, angle: angle });
+                        shootCooldown = 60;
+                    }
+                }
             }
 
+            // 描画
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             for (let o of allObstacles) { ctx.fillStyle = '#555'; ctx.fillRect(o.x, o.y, o.width, o.height); }
@@ -123,32 +139,19 @@
             for (let id in allPlayers) {
                 const p = allPlayers[id];
                 if (!p.alive) continue;
-                
-                // 自分以外の位置はサーバー同期、自分は手元の滑らかな位置を描画
-                let drawX = (id === socket.id) ? myPlayer.x : p.x;
-                let drawY = (id === socket.id) ? myPlayer.y : p.y;
-
                 ctx.fillStyle = p.color;
-                ctx.fillRect(drawX, drawY, p.size, p.size);
-                if (id === socket.id) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(drawX, drawY, p.size, p.size); }
+                ctx.fillRect(p.x, p.y, p.size, p.size);
+                if (id === socket.id) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(p.x, p.y, p.size, p.size); }
 
                 const barWidth = 40; const barHeight = 6;
-                const barX = drawX + (p.size - barWidth) / 2; const barY = drawY - 12;
+                const barX = p.x + (p.size - barWidth) / 2; const barY = p.y - 12;
                 ctx.fillStyle = '#333'; ctx.fillRect(barX, barY, barWidth, barHeight);
                 ctx.fillStyle = '#2ed573';
                 ctx.fillRect(barX, barY, barWidth * (p.hp / p.maxHp), barHeight);
             }
 
-            // 💡【軽量化】オブジェクト用の描画ループに変更
-            for (let bId in allBullets) {
-                let b = allBullets[bId];
+            for (let b of allBullets) {
                 ctx.fillStyle = '#fffa65'; ctx.beginPath(); ctx.arc(b.x, b.y, 5, 0, Math.PI * 2); ctx.fill();
-            }
-
-            for (let ex of allExplosions) {
-                let alpha = ex.life / ex.maxLife;
-                ctx.fillStyle = `rgba(255, 106, 0, ${alpha * 0.7})`; ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2); ctx.fill();
-                ctx.fillStyle = `rgba(255, 216, 0, ${alpha})`; ctx.beginPath(); ctx.arc(ex.x, ex.y, ex.radius * 0.5, 0, Math.PI * 2); ctx.fill();
             }
 
             if (!myPlayer.alive) {
@@ -156,28 +159,31 @@
                 ctx.fillStyle = '#ff4757'; ctx.font = 'bold 60px sans-serif'; ctx.textAlign = 'center';
                 ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
                 ctx.font = '24px sans-serif'; ctx.fillStyle = '#fff';
-                ctx.fillText('1〜4キーで武器を選び、F5キーで復活！', canvas.width / 2, canvas.height / 2 + 60);
+                ctx.fillText('1, 2, 3キーで武器を選び、F5キー（またはページ更新）で復活！', canvas.width / 2, canvas.height / 2 + 60);
             }
 
             requestAnimationFrame(gameLoop);
         }
 
-        socket.on('init_weapon', (savedWeapon) => { myWeapon = savedWeapon; updateWeaponText(savedWeapon); });
+        // サーバーから「お前の武器はこれだぞ」と教えられたら手元を同期
+        socket.on('init_weapon', (savedWeapon) => {
+            myWeapon = savedWeapon;
+            updateWeaponText(savedWeapon);
+        });
 
         socket.on('server_update', (data) => {
             allPlayers = data.players;
-            allBullets = data.bullets || {}; // オブジェクトで受け取る
+            allBullets = data.bullets;
             allObstacles = data.obstacles;
-            allExplosions = data.explosions || [];
             
             if (myPlayer.alive && allPlayers[socket.id]) {
-                // HPのみ同期し、座標の強制カクつきを防止
                 myPlayer.hp = allPlayers[socket.id].hp;
                 myPlayer.alive = allPlayers[socket.id].alive;
             }
         });
 
-        canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
         socket.emit('player_join', myPlayer);
         socket.emit('update_stage_size', { width: canvas.width, height: canvas.height });
         gameLoop();
