@@ -9,65 +9,38 @@ const io = new Server(server);
 app.use(express.static('public'));
 
 let players = {};
-let bullets = {}; // 💡【軽量化】配列からオブジェクト（連想配列）に変更
-let bulletIdCounter = 0; // 弾に一意のIDをつけるためのカウンター
+let bullets = [];
 
-let explosions = []; 
-let savedWeaponsByColor = {};
-
+// 障害物（ブロック）データ
 let obstacles = [
     { x: 300, y: 200, width: 60, height: 200 },
     { x: 700, y: 400, width: 250, height: 60 },
     { x: 500, y: 100, width: 200, height: 60 }
 ];
 
-function triggerExplosion(ex, ey, ownerId) {
-    const explosionRadius = 120; 
-    const innerRadius = 45;      
-
-    explosions.push({ x: ex, y: ey, radius: explosionRadius, life: 10, maxLife: 10 }); // 💡爆発の寿命も少し短くして負荷軽減
-
-    for (let id in players) {
-        let p = players[id];
-        if (!p.alive) continue;
-
-        let pCenterX = p.x + p.size / 2;
-        let pCenterY = p.y + p.size / 2;
-        let dist = Math.hypot(pCenterX - ex, pCenterY - ey);
-
-        if (dist <= innerRadius) {
-            p.hp -= 100;
-        } else if (dist <= explosionRadius) {
-            p.hp -= 25;
-        } else {
-            continue;
-        }
-
-        if (p.hp <= 0) { p.hp = 0; p.alive = false; }
-    }
-}
-
 io.on('connection', (socket) => {
+    console.log('プレイヤーが参加しました ID:', socket.id);
+
+    // 最初の参加 ＆ 復活（respawn）時の処理
     socket.on('player_join', (joinData) => {
-        const playerColor = joinData.color;
-        if (!savedWeaponsByColor[playerColor]) {
-            savedWeaponsByColor[playerColor] = 'machinegun';
-        }
+        // 既存の画面サイズデータを失わないように保護しつつ、初期化する
+        const currentWidth = players[socket.id] ? players[socket.id].stageWidth : 1200;
+        const currentHeight = players[socket.id] ? players[socket.id].stageHeight : 800;
 
         players[socket.id] = {
-            x: joinData.x, y: joinData.y, size: joinData.size, color: playerColor,
-            hp: joinData.hp, maxHp: joinData.maxHp, alive: joinData.alive,
-            weapon: savedWeaponsByColor[playerColor],
-            stageWidth: 1200, stageHeight: 800
+            x: joinData.x,
+            y: joinData.y,
+            size: joinData.size,
+            color: joinData.color,
+            hp: joinData.hp,
+            maxHp: joinData.maxHp,
+            alive: joinData.alive,
+            stageWidth: currentWidth,   // 💡サイズを保護
+            stageHeight: currentHeight  // 💡サイズを保護
         };
-        socket.emit('init_weapon', savedWeaponsByColor[playerColor]);
     });
 
-    socket.on('change_weapon', (data) => {
-        savedWeaponsByColor[data.color] = data.weaponType;
-        if (players[socket.id]) { players[socket.id].weapon = data.weaponType; }
-    });
-
+    // 座標の更新（他の大事なデータを巻き込んで消さないように、xとyだけをピンポイントで上書き）
     socket.on('player_move', (moveData) => {
         if (players[socket.id] && players[socket.id].alive) {
             players[socket.id].x = moveData.x;
@@ -75,6 +48,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 画面サイズの更新（これによって弾が消える範囲が正しく更新されます）
     socket.on('update_stage_size', (sizeData) => {
         if (players[socket.id]) {
             players[socket.id].stageWidth = sizeData.width;
@@ -82,77 +56,58 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 弾の発射
     socket.on('shoot', (bulletData) => {
         if (!players[socket.id] || !players[socket.id].alive) return;
 
-        let currentWeapon = players[socket.id].weapon;
-        let speed = 8; let life = 120; let damage = 2;
-        let isRocket = false; let isSniper = false;
+        let speed = 8;
+        let life = 120; 
 
-        if (currentWeapon === 'shotgun') {
-            speed = 7; life = 18; damage = 8;
-        } else if (currentWeapon === 'sniper') {
-            speed = 26; life = 200; damage = 5; isSniper = true; // 💡スナイパーの寿命を少し縮めてデータ削減
-        } else if (currentWeapon === 'rocket') {
-            speed = 7; life = 150; damage = 15; isRocket = true; // 💡ロケランの寿命も少し短縮
+        if (bulletData.type === 'shotgun') {
+            speed = 6;
+            life = 25;  
+        } else if (bulletData.type === 'sniper') {
+            speed = 22; 
+            life = 100;
         }
 
-        if (currentWeapon === 'shotgun') {
-            for (let i = -4; i <= 4; i++) { // 💡散弾を10発から8発に少し間引いて軽量化
-                if (i === 0) continue;
-                let spreadAngle = bulletData.angle + (i * 0.09);
-                let id = bulletIdCounter++;
-                bullets[id] = {
-                    ownerId: socket.id, x: bulletData.x, y: bulletData.y,
-                    startX: bulletData.x, startY: bulletData.y,
-                    vx: Math.cos(spreadAngle) * speed, vy: Math.sin(spreadAngle) * speed,
-                    life: life, damage: damage, isRocket: false, isSniper: false
-                };
-            }
-        } else {
-            let id = bulletIdCounter++;
-            bullets[id] = {
-                ownerId: socket.id, x: bulletData.x, y: bulletData.y,
-                startX: bulletData.x, startY: bulletData.y,
-                vx: Math.cos(bulletData.angle) * speed, vy: Math.sin(bulletData.angle) * speed,
-                life: life, damage: damage, isRocket: isRocket, isSniper: isSniper
-            };
-        }
+        bullets.push({
+            ownerId: socket.id,
+            x: bulletData.x,
+            y: bulletData.y,
+            vx: Math.cos(bulletData.angle) * speed,
+            vy: Math.sin(bulletData.angle) * speed,
+            life: life
+        });
     });
 
-    socket.on('disconnect', () => { delete players[socket.id]; });
+    socket.on('disconnect', () => {
+        console.log('プレイヤーが退室しました ID:', socket.id);
+        delete players[socket.id];
+    });
 });
 
-// 💡【軽量化】メインループの間隔を 1000/60 から 1000/30 (1秒に30回) に変更！
+// サーバー側メインループ（1秒間に60回）
 setInterval(() => {
-    for (let i = explosions.length - 1; i >= 0; i--) {
-        explosions[i].life--;
-        if (explosions[i].life <= 0) { explosions.splice(i, 1); }
-    }
-
-    // 💡【軽量化】オブジェクトのループ処理に変更（高速化）
-    for (let bId in bullets) {
-        let b = bullets[bId];
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
         b.x += b.vx;
         b.y += b.vy;
+
         b.life--;
-
         let owner = players[b.ownerId];
-        let maxWidth = owner && owner.stageWidth ? owner.stageWidth : 2000;
-        let maxHeight = owner && owner.stageHeight ? owner.stageHeight : 2000;
+        
+        // 💡 弾を撃ったプレイヤーの画面サイズを取得（存在しない場合は安全のために広い数値をデフォルトに）
+        let maxWidth = owner && owner.stageWidth ? owner.stageWidth : window.innerWidth || 2000;
+        let maxHeight = owner && owner.stageHeight ? owner.stageHeight : window.innerHeight || 2000;
 
-        if (b.life <= 0) {
-            if (b.isRocket) { triggerExplosion(b.x, b.y, b.ownerId); }
-            delete bullets[bId]; // 💡配列のspliceではなくdeleteで一瞬で消す
+        // 寿命切れ、または正しく取得された画面外で弾を消去
+        if (b.life <= 0 || b.x < 0 || b.x > maxWidth || b.y < 0 || b.y > maxHeight) {
+            bullets.splice(i, 1);
             continue;
         }
 
-        if (b.x < 0 || b.x > maxWidth || b.y < 0 || b.y > maxHeight) {
-            delete bullets[bId];
-            continue;
-        }
-
-        let hit = false;
+        // 当たり判定
         for (let id in players) {
             let p = players[id];
             if (!p.alive || b.ownerId === id) continue;
@@ -160,32 +115,22 @@ setInterval(() => {
             if (b.x >= p.x && b.x <= p.x + p.size &&
                 b.y >= p.y && b.y <= p.y + p.size) {
                 
-                let finalDamage = b.damage;
-                if (b.isSniper) {
-                    let travelDistance = Math.hypot(b.x - b.startX, b.y - b.startY);
-                    if (travelDistance < 200) finalDamage = 5;
-                    else if (travelDistance < 600) {
-                        finalDamage = 5 + Math.floor(((travelDistance - 200) / 300) * 20);
-                    } else finalDamage = 45;
+                p.hp -= 1; // 1ダメージ
+
+                if (p.hp <= 0) {
+                    p.hp = 0;
+                    p.alive = false;
                 }
 
-                p.hp -= finalDamage;
-                if (b.isRocket) { triggerExplosion(b.x, b.y, b.ownerId); }
-                if (p.hp <= 0) { p.hp = 0; p.alive = false; }
-                
-                delete bullets[bId]; // 💡deleteで消去
-                hit = true;
+                bullets.splice(i, 1);
                 break;
             }
         }
-        if (hit) continue;
     }
 
-    // データを全員に一斉送信
-    io.emit('server_update', { players: players, bullets: bullets, obstacles: obstacles, explosions: explosions });
-}, 1000 / 30); // 💡 30fps通信
+    io.emit('server_update', { players: players, bullets: bullets, obstacles: obstacles });
+}, 1000 / 60);
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`軽量化サーバー起動: ポート ${3000}`);
+server.listen(3000, () => {
+    console.log('バグ修正版ゲームサーバー起動！ http://localhost:3000');
 });
