@@ -21,12 +21,11 @@ let obstacles = [
     { x: 500, y: 100, width: 200, height: 60 }
 ];
 
-// 💡 爆発の判定処理（超強力版）
+// 爆発の判定処理
 function triggerExplosion(ex, ey, ownerId) {
-    const explosionRadius = 120; // 💡 爆発全体の巻き込み範囲を少し広く（半径120マス）
-    const innerRadius = 45;      // 💡 黄色い爆風（中心付近）の範囲（半径45マス）
+    const explosionRadius = 120; 
+    const innerRadius = 45;      
 
-    // 画面側のエフェクト用データ（黄色い爆風は0.5倍サイズで描画されているため、innerRadiusとほぼ一致します）
     explosions.push({ x: ex, y: ey, radius: explosionRadius, life: 20, maxLife: 20 });
 
     for (let id in players) {
@@ -35,26 +34,17 @@ function triggerExplosion(ex, ey, ownerId) {
 
         let pCenterX = p.x + p.size / 2;
         let pCenterY = p.y + p.size / 2;
-
-        // 爆心からの距離を計算
         let dist = Math.hypot(pCenterX - ex, pCenterY - ey);
 
         if (dist <= innerRadius) {
-            // 💡 1. 黄色い爆風（中心の至近距離）に当たった場合は100ダメージ（一撃必殺！）
             p.hp -= 100;
         } else if (dist <= explosionRadius) {
-            // 💡 2. オレンジ色の外周爆風に当たった場合は25ダメージ
             p.hp -= 25;
         } else {
-            // 範囲外ならダメージなし
             continue;
         }
 
-        // 死亡判定
-        if (p.hp <= 0) {
-            p.hp = 0;
-            p.alive = false;
-        }
+        if (p.hp <= 0) { p.hp = 0; p.alive = false; }
     }
 }
 
@@ -116,17 +106,17 @@ io.on('connection', (socket) => {
         let life = 120; 
         let damage = 2;
         let isRocket = false; 
+        let isSniper = false; // 💡 スナイパー用の識別フラグ
 
         if (currentWeapon === 'shotgun') {
             speed = 7; life = 18; damage = 8;
         } else if (currentWeapon === 'sniper') {
-            speed = 26; life = 100; damage = 30;
+            speed = 26; 
+            life = 100;
+            damage = 5;      // 💡 近距離（発射直後）の最低威力を「5」に設定
+            isSniper = true;
         } else if (currentWeapon === 'rocket') {
-            // 💡 ロケットランチャーの性能調整
-            speed = 7;      // 💡 弾速を少しアップ（5 → 7）
-            life = 85;      // 💡 射程（弾の寿命）を大幅に長く（45 → 85）して長距離まで届くように
-            damage = 15;    // 直撃時のかすりダメージ（メインは後ろの爆発処理）
-            isRocket = true;
+            speed = 7; life = 85; damage = 15; isRocket = true;
         }
 
         if (currentWeapon === 'shotgun') {
@@ -135,15 +125,17 @@ io.on('connection', (socket) => {
                 let spreadAngle = bulletData.angle + (i * 0.08);
                 bullets.push({
                     ownerId: socket.id, x: bulletData.x, y: bulletData.y,
+                    startX: bulletData.x, startY: bulletData.y, // 発射位置を記録
                     vx: Math.cos(spreadAngle) * speed, vy: Math.sin(spreadAngle) * speed,
-                    life: life, damage: damage, isRocket: false
+                    life: life, damage: damage, isRocket: false, isSniper: false
                 });
             }
         } else {
             bullets.push({
                 ownerId: socket.id, x: bulletData.x, y: bulletData.y,
+                startX: bulletData.x, startY: bulletData.y, // 💡 弾が生まれた座標を記録しておく
                 vx: Math.cos(bulletData.angle) * speed, vy: Math.sin(bulletData.angle) * speed,
-                life: life, damage: damage, isRocket: isRocket
+                life: life, damage: damage, isRocket: isRocket, isSniper: isSniper
             });
         }
     });
@@ -158,9 +150,7 @@ io.on('connection', (socket) => {
 setInterval(() => {
     for (let i = explosions.length - 1; i >= 0; i--) {
         explosions[i].life--;
-        if (explosions[i].life <= 0) {
-            explosions.splice(i, 1);
-        }
+        if (explosions[i].life <= 0) { explosions.splice(i, 1); }
     }
 
     for (let i = bullets.length - 1; i >= 0; i--) {
@@ -174,9 +164,7 @@ setInterval(() => {
         let maxHeight = owner && owner.stageHeight ? owner.stageHeight : 2000;
 
         if (b.life <= 0) {
-            if (b.isRocket) {
-                triggerExplosion(b.x, b.y, b.ownerId); 
-            }
+            if (b.isRocket) { triggerExplosion(b.x, b.y, b.ownerId); }
             bullets.splice(i, 1);
             continue;
         }
@@ -186,6 +174,7 @@ setInterval(() => {
             continue;
         }
 
+        // 当たり判定
         let hit = false;
         for (let id in players) {
             let p = players[id];
@@ -194,11 +183,31 @@ setInterval(() => {
             if (b.x >= p.x && b.x <= p.x + p.size &&
                 b.y >= p.y && b.y <= p.y + p.size) {
                 
-                p.hp -= b.damage;
+                let finalDamage = b.damage;
 
-                if (b.isRocket) {
-                    triggerExplosion(b.x, b.y, b.ownerId);
+                // 💡 スナイパーの弾だった場合、進んだ距離に応じて威力を計算する
+                if (b.isSniper) {
+                    // 発射された場所から、当たった場所までの距離（マス数）を計算
+                    let travelDistance = Math.hypot(b.x - b.startX, b.y - b.startY);
+
+                    if (travelDistance < 200) {
+                        // ① 近距離（200マス未満）：マシンガンより少し強いだけの「5」ダメージ
+                        finalDamage = 5;
+                    } else if (travelDistance < 500) {
+                        // ② 中距離（200〜500マス）：だんだん威力が上がっていく（最大25ダメージ）
+                        // 距離が離れるほど、5から25ダメージへ滑らかに増加
+                        let ratio = (travelDistance - 200) / 300;
+                        finalDamage = 5 + Math.floor(ratio * 20);
+                    } else {
+                        // ③ 遠距離（500マス以上）：一撃必殺級の超大ダメージ「45」！！
+                        finalDamage = 45;
+                    }
                 }
+
+                // 決定したダメージを減算
+                p.hp -= finalDamage;
+
+                if (b.isRocket) { triggerExplosion(b.x, b.y, b.ownerId); }
 
                 if (p.hp <= 0) {
                     p.hp = 0;
@@ -215,10 +224,7 @@ setInterval(() => {
     io.emit('server_update', { players: players, bullets: bullets, obstacles: obstacles, explosions: explosions });
 }, 1000 / 60);
 
-// 💡 修正前：server.listen(3000, () => { ... });
-
-// 💡 修正後：Renderなどの環境に対応できるようにポート番号を自動判定にします
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`ゲームサーバーがポート ${PORT} で起動しました！`);
+    console.log(`ゲームサーバーがポート ${3000} で起動しました！`);
 });
